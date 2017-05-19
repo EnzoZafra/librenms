@@ -11,6 +11,7 @@ foreach (dbFetchRows("SELECT `ifIndex`,`port_id` FROM `ports` WHERE `device_id` 
 // Build dot1dBasePort to port_id dictionary
 $portid_dict = array();
 
+$insert = array();
 // Discover FDB entries
 if ($device['os'] == 'ios') {
     echo 'FDB table : ';
@@ -21,9 +22,9 @@ if ($device['os'] == 'ios') {
         if ($state['vtpVlanState'] == 'operational') {
             $vlan = explode('.', $vlan_oid);
             echo "VLAN : ".$vlan[1] . "\n";
-
+            $vlan = $vlan[1];
             $device_vlan = $device;
-            $device_vlan['fdb_vlan'] = $vlan[1];
+            $device_vlan['fdb_vlan'] = $vlan;
             $device_vlan['snmp_retries]'] = 0;
             $FdbPort_table = snmp_walk($device_vlan, 'dot1dTpFdbPort', '-OqsX', 'BRIDGE-MIB');
             if (empty($FdbPort_table)) {
@@ -156,7 +157,6 @@ if ($continue) {
     foreach ($sql_result as $entry) {
         $existing_fdbs[$entry['vlan_id']][$entry['mac_address']] = $entry;
     }
-
     // Insert to database
     foreach ($insert as $vlan => $mac_address_table) {
         foreach ($mac_address_table as $mac_address_entry => $value) {

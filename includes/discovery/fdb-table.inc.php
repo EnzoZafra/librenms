@@ -6,6 +6,7 @@ $ifIndex_dict = array();
 foreach (dbFetchRows("SELECT `ifIndex`,`port_id` FROM `ports` WHERE `device_id` = ?", array($device['device_id'])) as $port_entry) {
     $ifIndex_dict[$port_entry['ifIndex']] = $port_entry['port_id'];
 }
+#print_r($ifIndex_dict);
 
 // Build dot1dBasePort to port_id dictionary
 $portid_dict = array();
@@ -18,41 +19,50 @@ if ($device['os'] == 'ios') {
 
     $vlans = snmpwalk_cache_oid($device, 'vtpVlanState', array(), 'CISCO-VTP-MIB');
     foreach ($vlans as $vlan_oid => $state) {
-        echo $state . "\n";
         if ($state['vtpVlanState'] == 'operational') {
             $vlan = explode('.', $vlan_oid);
+            echo "VLAN : ".$vlan[1] . "\n";
             $vlan = $vlan[1];
-
             $device_vlan = $device;
             $device_vlan['fdb_vlan'] = $vlan;
             $device_vlan['snmp_retries]'] = 0;
             $FdbPort_table = snmp_walk($device_vlan, 'dot1dTpFdbPort', '-OqsX', 'BRIDGE-MIB');
             if (empty($FdbPort_table)) {
+		echo "No entries...\n";
                 // If there are no entries for the vlan, continue
                 unset($device_vlan);
                 continue;
-            }
+            }  
+            #echo "table:";
+	    #print_r($FdbPort_table); 
 
             $dot1dBasePortIfIndex = snmp_walk($device_vlan, 'dot1dBasePortIfIndex', '-OqsX', 'BRIDGE-MIB');
 
             foreach (explode("\n", $dot1dBasePortIfIndex) as $dot1dBasePortIfIndex_entry) {
+		#echo "port ".$dot1dBasePortIfIndex_entry."\n";
                 if (!empty($dot1dBasePortIfIndex_entry)) {
-                    preg_match('~dot1dBasePortIfIndex\[(\d)]\s(\d.*)~', $dot1dBasePortIfIndex_entry, $matches);
-                    $portid_dict[$matches[1]] = $ifIndex_dict[$matches[2]];
+		    $port = explode(' ', $dot1dBasePortIfIndex_entry);
+		    $strTemp = explode('[', $port[0]);
+		    $portLocal = rtrim($strTemp[1],']');
+                    $portid_dict[$portLocal] = $ifIndex_dict[$port[1]];
                 }
             }
 
             foreach (explode("\n", $FdbPort_table) as $FdbPort_entry) {
-                preg_match('~(?P<oid>\w+)\[(?P<mac>[\w:-]+)]\s(?P<result>\w.*)~', $FdbPort_entry, $matches);
-                if (! empty($matches)) {
-                    list($oct_1, $oct_2, $oct_3, $oct_4, $oct_5, $oct_6) = explode(':', $matches['mac']);
+		#echo $FdbPort_entry."\n";
+		$port = explode(' ', $FdbPort_entry);
+		$macTemp = explode('[', $port[0]);
+		$mac = rtrim($macTemp[1],']');
+                if (! empty($mac)) {
+                    list($oct_1, $oct_2, $oct_3, $oct_4, $oct_5, $oct_6) = explode(':', $mac);
                     $mac_address = zeropad($oct_1) . zeropad($oct_2) . zeropad($oct_3) . zeropad($oct_4) . zeropad($oct_5) . zeropad($oct_6);
                     if (strlen($mac_address) != 12) {
                         echo 'Mac Address padding failed';
                         continue;
                     } else {
-                        $dot1dBasePort = $matches['result'];
-                        $insert[$vlan][$mac_address]['port_id'] = $portid_dict[$dot1dBasePort];
+                        $dot1dBasePort = $port[1];
+                        $insert[$vlan[1]][$mac_address]['port_id'] = $portid_dict[$dot1dBasePort];
+			#echo "vlan $vlan[1] - mac $mac_address - port ".$portid_dict[$dot1dBasePort]."\n";
                     }
                 }
             }
@@ -60,6 +70,7 @@ if ($device['os'] == 'ios') {
             unset($device_vlan);
         } //end if operational
     }// end vlan for ios
+    var_dump($insert); exit;
 } elseif ($device['os'] == 'timos') {
     echo 'FDB table : ';
     echo("\n");
@@ -89,12 +100,57 @@ if ($device['os'] == 'ios') {
             }
         }
     } //end vlan loop for timos
+} elseif ($device['os'] == 'comware') {
+    echo 'FDB table : ';
+    echo("\n");
+
+    // find fdb entries, output like
+    // dot1qTpFdbPort[507][0:24:c4:fd:a1:c7] 1
+    $FdbPort_table = snmp_walk($device, 'dot1qTpFdbEntry', '-Cc -OqsX', 'Q-BRIDGE-MIB');
+
+    // find port ids, output like
+    // dot1dBasePortIfIndex[1] 1
+    $dot1dBasePortIfIndex = snmp_walk($device, 'dot1dBasePortIfIndex', '-Cc -OqsX', 'BRIDGE-MIB'); 
+
+            foreach (explode("\n", $dot1dBasePortIfIndex) as $dot1dBasePortIfIndex_entry) {
+                if (!empty($dot1dBasePortIfIndex_entry)) {
+                    $port = explode(' ', $dot1dBasePortIfIndex_entry);
+                    $strTemp = explode('[', $port[0]);
+                    $portLocal = rtrim($strTemp[1],']');
+                    $portid_dict[$portLocal] = $ifIndex_dict[$port[1]];
+                }
+            }
+
+            foreach (explode("\n", $FdbPort_table) as $FdbPort_entry) {
+              preg_match('~(?P<oid>\w+)\[(?P<vlan>\d+)]\[(?P<mac>[\w:-]+)]\s(?P<port>\d+)~', $FdbPort_entry, $matches);
+              if (! empty($matches)) {
+                $port = $matches['port'];
+                $mac = $matches['mac'];
+                $vlan = $matches['vlan'];
+		//echo "vlan $vlan, port $port, mac $mac\n";
+                if (! empty($mac)) {
+                    list($oct_1, $oct_2, $oct_3, $oct_4, $oct_5, $oct_6) = explode(':', $mac);
+                    $mac_address = zeropad($oct_1) . zeropad($oct_2) . zeropad($oct_3) . zeropad($oct_4) . zeropad($oct_5) . zeropad($oct_6);
+                    if (strlen($mac_address) != 12) {
+                        echo 'Mac Address padding failed';
+                        continue;
+                    } else {
+		        $dot1dBasePort = $port;
+                        $insert[$vlan][$mac_address]['port_id'] = $portid_dict[$dot1dBasePort];
+                        echo "vlan $vlan - mac $mac_address - port ($port) ".$portid_dict[$dot1dBasePort]."\n";
+                    }
+                } // end if on empty mac
+              } // end if on matches
+            } // end loop on FdbPort_entry
 } else {
     echo "OS not yet implemented \n";
     $continue = false;
 }
 
+#var_dump($insert); exit;
+
 if ($continue) {
+    echo "Number of FDB entries: ".count($insert)."\n";
     // Build table of existing vlan/mac table
     $existing_fdbs = array();
     $sql_result = dbFetchRows("SELECT * FROM `ports_fdb` WHERE `device_id` = ?", array($device['device_id']));
